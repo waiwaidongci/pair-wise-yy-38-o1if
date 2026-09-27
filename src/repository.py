@@ -54,6 +54,21 @@ class Repository:
                     created_at TEXT NOT NULL,
                     UNIQUE(item_id, external_ref)
                 );
+                CREATE TABLE IF NOT EXISTS warning_tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                    station TEXT NOT NULL,
+                    contact TEXT NOT NULL,
+                    zone TEXT NOT NULL,
+                    planned_evacuees INTEGER NOT NULL DEFAULT 0,
+                    report TEXT CHECK(report IN ('received','unreachable','evacuated')),
+                    reported_evacuees INTEGER,
+                    receipt_at TEXT,
+                    range_changed INTEGER NOT NULL DEFAULT 0,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS audit_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     action TEXT NOT NULL,
@@ -148,6 +163,85 @@ class Repository:
                 "SELECT * FROM records WHERE item_id=? ORDER BY id", (item_id,)
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def create_warning_task(self, item_id: int, station: str, contact: str, zone: str,
+                            planned_evacuees: int, actor: str) -> Dict[str, Any]:
+        self.get_item(item_id)
+        now = utc_now()
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """INSERT INTO warning_tasks(item_id, station, contact, zone, planned_evacuees,
+                   report, reported_evacuees, receipt_at, range_changed, created_by,
+                   created_at, updated_at) VALUES(?,?,?,?,?,NULL,NULL,NULL,0,?,?,?)""",
+                (item_id, station, contact, zone, planned_evacuees, actor, now, now),
+            )
+            task_id = int(cur.lastrowid)
+        return self.get_warning_task(item_id, task_id)
+
+    def get_warning_task(self, item_id: int, task_id: int) -> Dict[str, Any]:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT * FROM warning_tasks WHERE id=? AND item_id=?",
+                (task_id, item_id),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError("预警任务不存在")
+        return dict(row)
+
+    def list_warning_tasks(self, item_id: int) -> List[Dict[str, Any]]:
+        self.get_item(item_id)
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM warning_tasks WHERE item_id=? ORDER BY id", (item_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def update_warning_receipt(self, item_id: int, task_id: int, report: str,
+                               reported_evacuees: Optional[int], actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """UPDATE warning_tasks SET report=?, reported_evacuees=?, receipt_at=?,
+                   updated_at=? WHERE id=? AND item_id=?""",
+                (report, reported_evacuees, now, now, task_id, item_id),
+            )
+            if cur.rowcount == 0:
+                raise NotFoundError("预警任务不存在")
+        return self.get_warning_task(item_id, task_id)
+
+    def adjust_discharge(self, item_id: int, quantity: float, zone: str,
+                         expected_version: int, actor: str):
+        now = utc_now()
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """UPDATE items SET quantity=?, version=version+1, updated_at=?
+                   WHERE id=? AND version=?""",
+                (quantity, now, item_id, expected_version),
+            )
+            if cur.rowcount == 0:
+                exists = self.conn.execute("SELECT 1 FROM items WHERE id=?", (item_id,)).fetchone()
+                if exists is None:
+                    raise NotFoundError("项目不存在")
+                raise ConflictError("版本冲突，请刷新后重试")
+            rows = self.conn.execute(
+                "SELECT id, receipt_at FROM warning_tasks WHERE item_id=?", (item_id,)
+            ).fetchall()
+            rearranged = flagged = 0
+            for row in rows:
+                if row["receipt_at"] is None:
+                    self.conn.execute(
+                        "UPDATE warning_tasks SET zone=?, updated_at=? WHERE id=?",
+                        (zone, now, row["id"]),
+                    )
+                    rearranged += 1
+                else:
+                    self.conn.execute(
+                        """UPDATE warning_tasks SET zone=?, range_changed=1, updated_at=?
+                           WHERE id=?""",
+                        (zone, now, row["id"]),
+                    )
+                    flagged += 1
+        return self.get_item(item_id), rearranged, flagged
 
     def open_record_count(self, item_id: int) -> int:
         with self._lock:

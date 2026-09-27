@@ -1,6 +1,6 @@
 # 水库防汛调度与操作确认
 
-根据库位、入库流量、下游警戒和施工限制生成复核授权的泄洪指令。
+根据库位、入库流量、下游警戒和施工限制生成复核授权的泄洪指令，并通过预警联动闭环下游乡镇的转移确认。
 
 ## 模块结构
 
@@ -30,9 +30,19 @@ python3 app.py --db ./data.db --port 8315
 - `GET /api/items/{id}`
 - `POST /api/items/{id}/records`
 - `POST /api/items/{id}/transition`，必须提交`expected_version`
+- `POST /api/items/{id}/warnings`，调度员登记站点联系人、预警区间和转移人数
+- `GET /api/items/{id}/warnings`，站点回报列表（含缺口原因）
+- `POST /api/items/{id}/warnings/{wid}/receipt`，站点回报收到/失联/已转移人数
+- `POST /api/items/{id}/discharge`，泄量调整，必须提交`expected_version`
 - `GET /api/audit`
 
 允许角色：duty_officer, chief_engineer, dispatcher, viewer。库位超过汛限或入库流量上升时提升紧迫度；授权前必须有复核记录，执行后仍要闭环现场反馈。
+
+## 预警联动
+
+- 调度员按站点登记联系人、预警区间（缺省按泄量自动划分）和转移人数；站点回报收到、失联或已转移人数。
+- 站点失联、超时未回（按严重度限时）或转移人数未核对完时，指令停在待执行并在列表中列出缺口；总工提交`kind=disposition`的处置意见后才授权执行，缺口变化后旧意见自动失效。
+- 泄量调整后，未确认预警按新范围重排，已有回执保留并标记范围变化；列表显示确认进度、缺口原因和回执时间。
 
 ## 测试
 

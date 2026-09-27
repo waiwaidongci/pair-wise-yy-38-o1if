@@ -1,1 +1,72 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>水库防汛调度与操作确认</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#17212b}pre{background:#f4f7f9;padding:1rem;overflow:auto}button{padding:.55rem 1rem}</style></head><body><h1>水库防汛调度与操作确认</h1><p>根据库位、入库流量、下游警戒和施工限制生成复核授权的泄洪指令</p><p>库位超过汛限或入库流量上升时提升紧迫度；授权前必须有复核记录，执行后仍要闭环现场反馈。</p><button onclick="loadItems()">刷新列表</button><pre id="out">使用X-Actor和X-Role请求头调用接口。</pre><script>async function loadItems(){const r=await fetch('/api/items',{headers:{'X-Actor':'demo','X-Role':'viewer'}});document.getElementById('out').textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>水库防汛调度与预警联动</title><style>
+body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:1080px;margin:2rem auto;padding:0 1rem;color:#17212b}
+table{border-collapse:collapse;width:100%;margin:.5rem 0}td,th{border:1px solid #d5dde3;padding:.35rem .5rem;text-align:left;font-size:.9rem}
+button{padding:.4rem .8rem;margin:.15rem}input,select{padding:.35rem;margin:.15rem}
+pre{background:#f4f7f9;padding:1rem;overflow:auto;font-size:.8rem}
+.gap{color:#b3261e}.ok{color:#1a7f37}.flag{color:#9a6700}
+fieldset{margin:.6rem 0;border:1px solid #d5dde3}legend{font-weight:600}
+</style></head><body>
+<h1>水库防汛调度与预警联动</h1>
+<p>调度员按站点登记联系人、预警区间和转移人数；站点回报收到、失联或已转移人数。站点失联、超时未回或人数未核对完时，指令停在待执行并列出缺口，总工写明处置意见后才授权执行。泄量调整后，未确认预警按新范围重排，已有回执保留并标出范围变化。</p>
+<div>身份：<input id="actor" value="demo" size="8"> 角色：<select id="role"><option>duty_officer</option><option>dispatcher</option><option>chief_engineer</option><option>viewer</option></select>
+<button onclick="loadItems()">刷新列表</button></div>
+<h2>调度指令</h2>
+<table id="items"><thead><tr><th>编号</th><th>标题</th><th>状态</th><th>严重度</th><th>泄量</th><th>预警进度</th><th>缺口原因</th><th>回执时间</th></tr></thead><tbody></tbody></table>
+<fieldset><legend>新建指令（duty_officer）</legend>
+<input id="cTitle" placeholder="标题" size="14"><input id="cDesc" placeholder="描述" size="14">
+<select id="cSev"><option>routine</option><option>attention</option><option selected>urgent</option><option>emergency</option></select>
+<input id="cQty" type="number" placeholder="泄量" style="width:6rem"><input id="cThr" type="number" placeholder="汛限" style="width:6rem" value="1">
+<button onclick="createItem()">创建</button></fieldset>
+<div id="detail" style="display:none">
+<h2>指令 <span id="dId"></span> 预警联动</h2>
+<table id="warnings"><thead><tr><th>站点</th><th>联系人</th><th>预警区间</th><th>应转移</th><th>回报</th><th>已转移</th><th>回执时间</th><th>缺口</th><th>操作</th></tr></thead><tbody></tbody></table>
+<fieldset><legend>登记站点（dispatcher）</legend>
+<input id="wStation" placeholder="站点" size="10"><input id="wContact" placeholder="联系人" size="8">
+<input id="wZone" placeholder="预警区间(可空,自动)" size="14"><input id="wPlanned" type="number" placeholder="转移人数" style="width:6rem">
+<button onclick="registerWarning()">登记</button></fieldset>
+<fieldset><legend>泄量调整（dispatcher，未确认预警按新范围重排，已有回执保留并标记范围变化）</legend>
+<input id="dQty" type="number" placeholder="新泄量" style="width:7rem"><input id="dZone" placeholder="新预警区间(可空,自动)" size="16">
+<button onclick="adjustDischarge()">调整</button></fieldset>
+<fieldset><legend>总工处置意见（chief_engineer，写明后授权执行）</legend>
+<input id="dOpinion" placeholder="处置意见" size="40"><button onclick="writeDisposition()">提交意见</button></fieldset>
+<fieldset><legend>状态流转（当前版本 <span id="dVer"></span>）</legend>
+<button onclick="transition('checked')">复核(duty_officer)</button>
+<button onclick="transition('authorized')">授权(chief_engineer)</button>
+<button onclick="transition('executed')">执行(dispatcher)</button>
+<button onclick="transition('closed')">关闭(chief_engineer)</button></fieldset>
+</div>
+<pre id="out">选择上方身份后点击“刷新列表”。</pre>
+<script>
+let current=null;
+const H=()=>({'Content-Type':'application/json','X-Actor':document.getElementById('actor').value,'X-Role':document.getElementById('role').value});
+function show(x){document.getElementById('out').textContent=typeof x==='string'?x:JSON.stringify(x,null,2)}
+async function call(method,url,body){const r=await fetch(url,{method,headers:H(),body:body?JSON.stringify(body):undefined});const j=await r.json().catch(()=>({}));if(!r.ok)show(j);return{ok:r.ok,data:j}}
+function progressText(p){if(!p||!p.total)return'无预警任务';return`已确认${p.confirmed}/${p.total}`+(p.pending?`，待确认${p.pending}`:'')}
+function gapText(p){if(!p||!p.gaps.length)return'';return p.gaps.map(g=>`${g.station}:${g.reason}`).join('；')}
+function receiptText(p){if(!p||!p.receipts.length)return'';return p.receipts.map(r=>`${r.station} ${r.receipt_at||''}${r.range_changed?'(范围变化)':''}`).join('；')}
+async function loadItems(){const{data}=await call('GET','/api/items');const tb=document.querySelector('#items tbody');tb.innerHTML='';
+for(const it of data.items||[]){const tr=document.createElement('tr');tr.style.cursor='pointer';tr.onclick=()=>selectItem(it.id);
+tr.innerHTML=`<td>RF-${it.id}</td><td>${it.title}</td><td>${it.status}</td><td>${it.severity}</td><td>${it.quantity}</td><td>${progressText(it.warning_progress)}</td><td class="gap">${gapText(it.warning_progress)}</td><td>${receiptText(it.warning_progress)}</td>`;tb.appendChild(tr)}
+show(data)}
+async function selectItem(id){const{data}=await call('GET','/api/items/'+id);if(!data.id)return;current=data;
+document.getElementById('detail').style.display='block';document.getElementById('dId').textContent='RF-'+data.id;document.getElementById('dVer').textContent=data.version;
+const{data:w}=await call('GET',`/api/items/${id}/warnings`);const tb=document.querySelector('#warnings tbody');tb.innerHTML='';
+for(const t of w.warnings||[]){const tr=document.createElement('tr');
+const rep=t.report?({received:'收到',unreachable:'失联',evacuated:'已转移'})[t.report]:'待回报';
+const flag=t.range_changed?' <span class="flag">(范围变化)</span>':'';
+tr.innerHTML=`<td>${t.station}</td><td>${t.contact}</td><td>${t.zone}${flag}</td><td>${t.planned_evacuees}</td><td>${rep}</td><td>${t.reported_evacuees??''}</td><td>${t.receipt_at||''}</td><td class="gap">${(t.gap_reasons||[]).join('；')}</td><td></td>`;
+const td=tr.lastChild;
+const b1=document.createElement('button');b1.textContent='收到';b1.onclick=()=>report(t.id,{report:'received'});td.appendChild(b1);
+const b2=document.createElement('button');b2.textContent='失联';b2.onclick=()=>report(t.id,{report:'unreachable'});td.appendChild(b2);
+const b3=document.createElement('button');b3.textContent='已转移';b3.onclick=()=>{const n=prompt('已转移人数',t.planned_evacuees);if(n!==null)report(t.id,{report:'evacuated',reported_evacuees:Number(n)})};td.appendChild(b3);
+tb.appendChild(tr)}}
+async function report(taskId,body){const{ok,data}=await call('POST',`/api/items/${current.id}/warnings/${taskId}/receipt`,body);if(ok)selectItem(current.id),loadItems()}
+async function registerWarning(){const body={station:wStation.value,contact:wContact.value,planned_evacuees:Number(wPlanned.value||0)};if(wZone.value)body.zone=wZone.value;
+const{ok}=await call('POST',`/api/items/${current.id}/warnings`,body);if(ok)selectItem(current.id),loadItems()}
+async function adjustDischarge(){const body={quantity:Number(dQty.value),expected_version:current.version};if(dZone.value)body.zone=dZone.value;
+const{ok,data}=await call('POST',`/api/items/${current.id}/discharge`,body);if(ok){show(data);selectItem(current.id);loadItems()}}
+async function writeDisposition(){const{ok}=await call('POST',`/api/items/${current.id}/records`,{kind:'disposition',detail:dOpinion.value,status:'closed'});if(ok)selectItem(current.id)}
+async function transition(target){const{ok,data}=await call('POST',`/api/items/${current.id}/transition`,{target,expected_version:current.version});if(ok){show(data);selectItem(current.id);loadItems()}}
+async function createItem(){const{ok,data}=await call('POST','/api/items',{title:cTitle.value,description:cDesc.value,severity:cSev.value,quantity:Number(cQty.value||0),threshold:Number(cThr.value||1)});if(ok){show(data);loadItems()}}
+loadItems();
+</script></body></html>
