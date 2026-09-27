@@ -1,1 +1,130 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>水库防汛调度与操作确认</title><style>body{font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#17212b}pre{background:#f4f7f9;padding:1rem;overflow:auto}button{padding:.55rem 1rem}</style></head><body><h1>水库防汛调度与操作确认</h1><p>根据库位、入库流量、下游警戒和施工限制生成复核授权的泄洪指令</p><p>库位超过汛限或入库流量上升时提升紧迫度；授权前必须有复核记录，执行后仍要闭环现场反馈。</p><button onclick="loadItems()">刷新列表</button><pre id="out">使用X-Actor和X-Role请求头调用接口。</pre><script>async function loadItems(){const r=await fetch('/api/items',{headers:{'X-Actor':'demo','X-Role':'viewer'}});document.getElementById('out').textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>水库防汛调度 · 预警联动</title><style>
+body{font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;max-width:1100px;margin:1.5rem auto;padding:0 1rem;color:#17212b}
+h1{font-size:1.35rem}h2{font-size:1.05rem;margin:.6rem 0 .4rem}
+section{border:1px solid #d8e0e6;border-radius:8px;padding:.9rem 1rem;margin:.9rem 0}
+table{border-collapse:collapse;width:100%;margin:.4rem 0}
+th,td{border:1px solid #dde4ea;padding:.35rem .5rem;font-size:.88rem;text-align:left;vertical-align:top}
+th{background:#f0f4f7}
+button{padding:.4rem .8rem;margin:.15rem;cursor:pointer}
+input,select,textarea{padding:.35rem;margin:.15rem;border:1px solid #c4cfd8;border-radius:4px}
+textarea{width:97%;min-height:3rem}
+#msg{display:none;padding:.55rem .8rem;border-radius:6px;margin:.6rem 0;white-space:pre-wrap}
+#msg.err{display:block;background:#fdecea;color:#b3261e}
+#msg.ok{display:block;background:#e8f6ec;color:#146c2e}
+.gap{color:#b3261e;font-weight:600}
+.muted{color:#5b6b78;font-size:.85rem}
+.tag{display:inline-block;background:#fff3cd;border:1px solid #e0c56e;border-radius:4px;padding:0 .35rem;font-size:.78rem;margin:.1rem}
+.tag.blue{background:#e3f0fb;border-color:#9cc3e5}
+.row{display:flex;gap:.6rem;flex-wrap:wrap;align-items:center}
+</style></head><body>
+<h1>水库防汛调度 · 预警联动</h1>
+<p class="muted">站点失联、超时未回或转移人数未核对完时，指令停在待执行并列出缺口，总工写明处置意见后才授权执行；泄量调整后，未确认预警按新范围重排，已有回执保留并标出范围变化。</p>
+<div class="row">
+<label>身份 <input id="actor" value="调度员甲" size="10"></label>
+<label>角色 <select id="role">
+<option value="duty_officer">duty_officer 值班员</option>
+<option value="chief_engineer">chief_engineer 总工</option>
+<option value="dispatcher" selected>dispatcher 调度员</option>
+<option value="viewer">viewer 查看</option>
+</select></label>
+<button onclick="refresh()">刷新列表</button>
+</div>
+<div id="msg"></div>
+<section>
+<h2>调度指令</h2>
+<div id="list">加载中…</div>
+<details style="margin-top:.5rem"><summary>新建指令（值班员）</summary>
+<div class="row">
+<input id="cTitle" placeholder="标题" size="16"><input id="cDesc" placeholder="描述" size="22">
+<select id="cSev"><option>routine</option><option>attention</option><option selected>urgent</option><option>emergency</option></select>
+泄量<input id="cQty" type="number" value="500" style="width:6rem">警戒<input id="cThr" type="number" value="100" style="width:5rem">
+<button onclick="createItem()">创建</button>
+</div></details>
+</section>
+<section id="detail" style="display:none"></section>
+<script>
+let current=null;
+const NEXT={draft:['checked'],checked:['authorized'],authorized:['executed'],executed:['closed'],closed:[]};
+const ACT={checked:'提交复核',authorized:'总工授权',executed:'执行',closed:'关闭'};
+const $=id=>document.getElementById(id);
+function hdrs(){return {'Content-Type':'application/json','X-Actor':$('actor').value,'X-Role':$('role').value};}
+async function api(method,url,body){
+  const r=await fetch(url,{method,headers:hdrs(),body:body?JSON.stringify(body):undefined});
+  let data={};try{data=await r.json();}catch(e){}
+  if(!r.ok)throw new Error(data.message||('HTTP '+r.status));
+  return data;
+}
+function note(text,ok){const m=$('msg');m.textContent=text;m.className=ok?'ok':'err';}
+async function run(fn){try{await fn();}catch(e){note(e.message,false);}}
+function fmt(t){return t||'—';}
+async function refresh(){
+  const d=await api('GET','/api/items');
+  const rows=d.items.map(it=>{
+    const p=it.warning_progress||{total:0,confirmed:0,gaps:0,reasons:[],last_receipt_at:null};
+    const prog=p.total?`${p.confirmed}/${p.total} 已确认`:'—';
+    const gaps=p.gaps?`<span class="gap">缺口 ${p.gaps}</span><br><span class="muted">${p.reasons.join('<br>')}</span>`:'—';
+    return `<tr><td>${it.id}</td><td>${it.title}</td><td>${it.status}</td><td>${it.severity}</td><td>${it.quantity}</td><td>${prog}</td><td>${gaps}</td><td class="muted">${fmt(p.last_receipt_at)}</td><td><button onclick="openDetail(${it.id})">详情</button></td></tr>`;
+  }).join('');
+  $('list').innerHTML=`<table><tr><th>ID</th><th>标题</th><th>状态</th><th>级别</th><th>泄量</th><th>预警进度</th><th>缺口原因</th><th>最近回执</th><th></th></tr>${rows||'<tr><td colspan="9" class="muted">暂无指令</td></tr>'}</table>`;
+}
+async function createItem(){await run(async()=>{
+  await api('POST','/api/items',{title:$('cTitle').value,description:$('cDesc').value,severity:$('cSev').value,quantity:Number($('cQty').value),threshold:Number($('cThr').value)});
+  note('已创建',true);await refresh();
+});}
+async function openDetail(id){
+  const it=await api('GET','/api/items/'+id);
+  current=it;renderDetail(it);$('detail').style.display='block';
+}
+function renderDetail(it){
+  const p=it.warning_progress;
+  const btns=(NEXT[it.status]||[]).map(t=>`<button onclick="transition('${t}')">${ACT[t]}</button>`).join('');
+  const gaps=it.gaps.length?`<p class="gap">预警缺口：${it.gaps.map(g=>g.station+'：'+g.reasons.join('、')).join('；')}</p>`:'<p class="muted">当前无预警缺口</p>';
+  const disp=it.disposition?`<p>处置意见（${it.disposition.created_by} · ${it.disposition.created_at} · ${it.disposition.fresh?'有效':'已被新预警动态覆盖，需总工重新确认'}）：${it.disposition.opinion}</p>`:'<p class="muted">尚无总工处置意见</p>';
+  const warns=it.warnings.map(w=>{
+    const tags=[w.in_range?'':'<span class="tag">超出区间</span>',w.range_changed?'<span class="tag">范围变化</span>',w.requeue_count?`<span class="tag blue">重排×${w.requeue_count}</span>`:''].join('');
+    const reason=w.gap_reasons.length?`<span class="gap">${w.gap_reasons.join('、')}</span>`:'—';
+    return `<tr><td>${w.station}</td><td>${w.contact}</td><td>${w.range_min}~${w.range_max}</td><td>${w.expected_evacuees}</td><td>${w.status_label}${w.overdue?'（已超时）':''}</td><td>${w.evacuated_count==null?'—':w.evacuated_count}</td><td class="muted">${fmt(w.last_receipt_at)}</td><td>${reason}</td><td>${tags||'—'}</td>
+    <td><input type="number" min="0" id="ev-${w.id}" placeholder="已转移" style="width:5rem"><button onclick="receipt(${w.id},'received')">收到</button><button onclick="receipt(${w.id},'unreachable')">失联</button></td></tr>`;
+  }).join('');
+  $('detail').innerHTML=`
+  <h2>指令 #${it.id} ${it.title} <span class="tag blue">${it.status}</span></h2>
+  <p class="muted">泄量 ${it.quantity} / 警戒 ${it.threshold} · 级别 ${it.severity} · 版本 ${it.version} · 预警进度 ${p.confirmed}/${p.total} 已确认</p>
+  <div class="row">${btns}</div>
+  ${gaps}${disp}
+  <h2>站点预警</h2>
+  <table><tr><th>站点</th><th>联系人</th><th>预警区间</th><th>转移人数</th><th>状态</th><th>已转移</th><th>回执时间</th><th>缺口原因</th><th>标记</th><th>登记回执</th></tr>${warns||'<tr><td colspan="10" class="muted">尚未登记预警站点</td></tr>'}</table>
+  <h2>登记预警站点（调度员）</h2>
+  <div class="row"><input id="wStation" placeholder="站点" size="10"><input id="wContact" placeholder="联系人" size="10">
+  区间<input id="wMin" type="number" placeholder="下限" style="width:5rem">~<input id="wMax" type="number" placeholder="上限" style="width:5rem">
+  转移人数<input id="wExp" type="number" value="0" style="width:5rem"><button onclick="addWarning()">登记</button></div>
+  <h2>泄量调整（调度员）</h2>
+  <div class="row">新泄量<input id="newQty" type="number" style="width:6rem"><button onclick="adjust()">调整并重排</button><span class="muted">未确认预警按新范围重排，已有回执保留并标出范围变化</span></div>
+  <h2>总工处置意见</h2>
+  <textarea id="opinion" placeholder="针对当前预警缺口写明处置意见"></textarea>
+  <button onclick="dispose()">提交处置意见（总工）</button>`;
+}
+async function transition(target){await run(async()=>{
+  await api('POST','/api/items/'+current.id+'/transition',{target,expected_version:current.version});
+  note('已流转到 '+target,true);await openDetail(current.id);await refresh();
+});}
+async function addWarning(){await run(async()=>{
+  await api('POST','/api/items/'+current.id+'/warnings',{station:$('wStation').value,contact:$('wContact').value,range_min:Number($('wMin').value),range_max:Number($('wMax').value),expected_evacuees:Number($('wExp').value)});
+  note('预警已登记',true);await openDetail(current.id);await refresh();
+});}
+async function receipt(wid,result){await run(async()=>{
+  const body={result};
+  const v=$('ev-'+wid).value;
+  if(result==='received'&&v!=='')body.evacuated_count=Number(v);
+  await api('POST','/api/items/'+current.id+'/warnings/'+wid+'/receipts',body);
+  note('回执已登记',true);await openDetail(current.id);await refresh();
+});}
+async function adjust(){await run(async()=>{
+  await api('POST','/api/items/'+current.id+'/adjust',{quantity:Number($('newQty').value),expected_version:current.version});
+  note('泄量已调整，未确认预警已重排',true);await openDetail(current.id);await refresh();
+});}
+async function dispose(){await run(async()=>{
+  await api('POST','/api/items/'+current.id+'/disposition',{opinion:$('opinion').value});
+  note('处置意见已提交',true);await openDetail(current.id);
+});}
+refresh().catch(e=>note(e.message,false));
+</script></body></html>

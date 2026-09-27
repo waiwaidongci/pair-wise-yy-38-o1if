@@ -119,6 +119,22 @@ def make_handler(service: Service, static_dir: str):
                     expected = body.get("expected_version")
                     self._json(200, service.transition(
                         item_id, target, expected, actor, role))
+                elif (path.startswith("/api/items/") and path.endswith("/receipts")
+                        and len(path.split("/")) == 7 and path.split("/")[4] == "warnings"):
+                    parts = path.split("/")
+                    item_id = int(parts[3])
+                    warning_id = int(parts[5])
+                    self._json(201, service.add_receipt(
+                        item_id, warning_id, body, actor, role))
+                elif path.startswith("/api/items/") and path.endswith("/warnings"):
+                    item_id = int(path.split("/")[3])
+                    self._json(201, service.add_warning(item_id, body, actor, role))
+                elif path.startswith("/api/items/") and path.endswith("/adjust"):
+                    item_id = int(path.split("/")[3])
+                    self._json(200, service.adjust_quantity(item_id, body, actor, role))
+                elif path.startswith("/api/items/") and path.endswith("/disposition"):
+                    item_id = int(path.split("/")[3])
+                    self._json(201, service.add_disposition(item_id, body, actor, role))
                 else:
                     self._json(404, {"error": "not_found"})
             except Exception as exc:

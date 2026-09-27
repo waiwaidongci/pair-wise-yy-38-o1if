@@ -65,6 +65,33 @@ class Repository:
                     entry_hash TEXT NOT NULL UNIQUE,
                     created_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS warnings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                    station TEXT NOT NULL,
+                    contact TEXT NOT NULL,
+                    range_min REAL NOT NULL,
+                    range_max REAL NOT NULL,
+                    expected_evacuees INTEGER NOT NULL DEFAULT 0,
+                    due_at TEXT NOT NULL,
+                    requeue_count INTEGER NOT NULL DEFAULT 0,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS receipts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    warning_id INTEGER NOT NULL REFERENCES warnings(id) ON DELETE CASCADE,
+                    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                    result TEXT NOT NULL CHECK(result IN ('received','unreachable')),
+                    evacuated_count INTEGER,
+                    note TEXT,
+                    quantity REAL NOT NULL,
+                    range_min REAL NOT NULL,
+                    range_max REAL NOT NULL,
+                    created_by TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
             """)
 
     @staticmethod
@@ -156,6 +183,98 @@ class Repository:
                 (item_id,),
             ).fetchone()
         return int(row["n"])
+
+    def create_warning(self, item_id: int, station: str, contact: str,
+                       range_min: float, range_max: float, expected_evacuees: int,
+                       due_at: str, actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        self.get_item(item_id)
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """INSERT INTO warnings(item_id, station, contact, range_min, range_max,
+                   expected_evacuees, due_at, requeue_count, created_by, created_at, updated_at)
+                   VALUES(?,?,?,?,?,?,?,0,?,?,?)""",
+                (item_id, station, contact, range_min, range_max, expected_evacuees,
+                 due_at, actor, now, now),
+            )
+            warning_id = int(cur.lastrowid)
+        return self.get_warning(warning_id)
+
+    def get_warning(self, warning_id: int) -> Dict[str, Any]:
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM warnings WHERE id=?", (warning_id,)).fetchone()
+        if row is None:
+            raise NotFoundError("预警不存在")
+        return dict(row)
+
+    def list_warnings(self, item_id: int) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM warnings WHERE item_id=? ORDER BY id", (item_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_receipt(self, warning_id: int, item_id: int, result: str,
+                    evacuated_count: Optional[int], note: Optional[str], quantity: float,
+                    range_min: float, range_max: float, actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        self.get_warning(warning_id)
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """INSERT INTO receipts(warning_id, item_id, result, evacuated_count, note,
+                   quantity, range_min, range_max, created_by, created_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)""",
+                (warning_id, item_id, result, evacuated_count, note, quantity,
+                 range_min, range_max, actor, now),
+            )
+            receipt_id = int(cur.lastrowid)
+            self.conn.execute("UPDATE warnings SET updated_at=? WHERE id=?", (now, warning_id))
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM receipts WHERE id=?", (receipt_id,)).fetchone()
+        return dict(row)
+
+    def list_item_receipts(self, item_id: int) -> List[Dict[str, Any]]:
+        with self._lock:
+            rows = self.conn.execute(
+                "SELECT * FROM receipts WHERE item_id=? ORDER BY id", (item_id,)
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def requeue_warnings(self, item_id: int, warning_ids: List[int], due_at: str) -> None:
+        if not warning_ids:
+            return
+        now = utc_now()
+        with self._lock, self.conn:
+            self.conn.executemany(
+                """UPDATE warnings SET due_at=?, requeue_count=requeue_count+1, updated_at=?
+                   WHERE id=? AND item_id=?""",
+                [(due_at, now, wid, item_id) for wid in warning_ids],
+            )
+
+    def adjust_quantity(self, item_id: int, quantity: float, expected_version: int,
+                        actor: str) -> Dict[str, Any]:
+        now = utc_now()
+        with self._lock, self.conn:
+            cur = self.conn.execute(
+                """UPDATE items SET quantity=?, version=version+1, updated_at=?
+                   WHERE id=? AND version=?""",
+                (quantity, now, item_id, expected_version),
+            )
+            if cur.rowcount == 0:
+                exists = self.conn.execute("SELECT 1 FROM items WHERE id=?", (item_id,)).fetchone()
+                if exists is None:
+                    raise NotFoundError("项目不存在")
+                raise ConflictError("版本冲突，请刷新后重试")
+        return self.get_item(item_id)
+
+    def latest_disposition(self, item_id: int) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            row = self.conn.execute(
+                """SELECT * FROM records WHERE item_id=? AND kind='disposition'
+                   ORDER BY id DESC LIMIT 1""",
+                (item_id,),
+            ).fetchone()
+        return dict(row) if row else None
 
     def append_audit(self, action: str, entity_type: str, entity_id: int,
                      actor: str, detail: dict) -> Dict[str, Any]:

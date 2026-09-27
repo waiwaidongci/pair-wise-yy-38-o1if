@@ -1,6 +1,14 @@
 # 水库防汛调度与操作确认
 
-根据库位、入库流量、下游警戒和施工限制生成复核授权的泄洪指令。
+根据库位、入库流量、下游警戒和施工限制生成复核授权的泄洪指令，并对下游乡镇预警回执做联动闸门。
+
+## 预警联动
+
+- 调度员按站点登记联系人、预警区间（泄量上下限）和转移人数（`POST /api/items/{id}/warnings`）。
+- 站点回执：收到（可带已转移人数）或失联（`POST /api/items/{id}/warnings/{wid}/receipts`），回执保留泄量与区间快照。
+- 站点失联、超时未回（按级别限时）或转移人数未核对完时，执行被拦在待执行并列出缺口；总工提交处置意见（`POST /api/items/{id}/disposition`）后才放行，且意见之后出现新的预警动态需重新确认。
+- 泄量调整（`POST /api/items/{id}/adjust`）后，未确认预警按新范围重排（重置时限、计重排次数），已确认回执保留并标出范围变化；超出区间的站点不再产生缺口。
+- 指令列表与详情显示预警进度、缺口原因和最近回执时间。
 
 ## 模块结构
 
@@ -30,6 +38,10 @@ python3 app.py --db ./data.db --port 8315
 - `GET /api/items/{id}`
 - `POST /api/items/{id}/records`
 - `POST /api/items/{id}/transition`，必须提交`expected_version`
+- `POST /api/items/{id}/warnings`，调度员登记站点预警
+- `POST /api/items/{id}/warnings/{wid}/receipts`，登记站点回执
+- `POST /api/items/{id}/adjust`，泄量调整并重排未确认预警，必须提交`expected_version`
+- `POST /api/items/{id}/disposition`，总工处置意见
 - `GET /api/audit`
 
 允许角色：duty_officer, chief_engineer, dispatcher, viewer。库位超过汛限或入库流量上升时提升紧迫度；授权前必须有复核记录，执行后仍要闭环现场反馈。
